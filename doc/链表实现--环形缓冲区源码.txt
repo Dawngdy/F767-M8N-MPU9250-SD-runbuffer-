@@ -1,0 +1,242 @@
+https://zhuanlan.zhihu.com/p/39935095
+
+#define min(a, b) (a)<(b)?(a):(b)                   ///< Calculate the minimum value
+
+typedef struct {
+    size_t rbCapacity;  //缓冲区的容量，也就是大小
+    uint8_t  *rbHead;  //缓冲区的头指针
+    uint8_t  *rbTail;  //缓冲区的尾指针
+    uint8_t  *rbBuff;  //缓冲区的首地址
+}rb_t;
+//////////////////////////
+ringbuffer.c
+//创建环形缓冲区的函数
+int8_t ICACHE_FLASH_ATTR rbCreate(rb_t* rb)
+{
+    if(NULL == rb)
+    {
+        return -1;
+    }
+
+    rb->rbHead = rb->rbBuff;
+    rb->rbTail = rb->rbBuff;
+    return 0;
+}
+
+int8_t ICACHE_FLASH_ATTR rbDelete(rb_t* rb)
+{
+    if(NULL == rb)
+    {
+        return -1;
+    }
+
+    rb->rbBuff = NULL;  
+    rb->rbHead = NULL;
+    rb->rbTail = NULL;
+    rb->rbCapacity = 0;
+        return 0;
+}
+
+//环形缓冲区的删除
+int8_t ICACHE_FLASH_ATTR rbDelete(rb_t* rb)
+{
+    if(NULL == rb)
+    {
+        return -1;
+    }
+
+    rb->rbBuff = NULL;
+    rb->rbHead = NULL;
+    rb->rbTail = NULL;
+    rb->rbCapacity = 0;
+        return 0;
+}
+
+//获取环形缓冲区的容量
+int32_t ICACHE_FLASH_ATTR rbCapacity(rb_t *rb)
+{
+    if(NULL == rb)
+    {
+        return -1;
+    }
+
+    return rb->rbCapacity;
+}
+
+//环形缓冲区可读数据大小
+int32_t ICACHE_FLASH_ATTR rbCanRead(rb_t *rb)
+{
+    if(NULL == rb)
+    {
+        return -1;  //如果缓冲区是没有被创建的，那么返回-1，表示非法
+    }
+
+    if (rb->rbHead == rb->rbTail)
+    {
+        return 0;   //如果环形缓冲区的首尾都在一个位置，那么表面环形缓冲区没有数据，那么是不可读的
+    }
+
+    if (rb->rbHead < rb->rbTail)  //情况1、说明可读数据的地址是递增的
+    {
+        return rb->rbTail - rb->rbHead;  
+    }
+
+    return rbCapacity(rb) - (rb->rbHead - rb->rbTail);   //情况2、可读数据的地址跨过了0点/跨过了起始点
+}
+
+//获取环形缓冲区可写数据大小
+int32_t ICACHE_FLASH_ATTR rbCanWrite(rb_t *rb)
+{
+    if(NULL == rb)
+    {
+        return -1;
+    }
+
+    return rbCapacity(rb) - rbCanRead(rb);  //缓存区的总容量-可读数据大小
+}
+
+//环形缓冲区读数据，从rb缓存区中读count个数据，存到data中
+int32_t ICACHE_FLASH_ATTR rbRead(rb_t *rb, void *data, size_t count)
+{
+    int32_t copySz = 0;
+	//如果是缓冲区没被创建或者是读数据地址非法（NULL）都将返回错误。
+    if(NULL == rb)
+    {
+        return -1;
+    }
+
+    if(NULL == data)
+    {
+        return -1;
+    }
+	//情况1、如果rb->rbHead < rb->rbTail，就是可读数据的地址是递增的，那么可以直接读数据
+    if (rb->rbHead < rb->rbTail)  
+    {
+        copySz = min(count, rbCanRead(rb));  //读取的最大数据不能超过缓冲区可读最大数据
+        memcpy(data, rb->rbHead, copySz);
+        rb->rbHead += copySz;  //头指针更新，指到下一个可读取数据那里
+        return copySz;
+    }
+	//情况2、如果rb->rbHead >= rb->rbTail，即可读数据的地址跨过了0点/跨过了起始点
+    else
+    {
+        if (count < rbCapacity(rb)-(rb->rbHead - rb->rbBuff))  
+        {	
+			//情况2.1、如果要读取的数据<从环形缓冲区的首地址开始到环形缓冲区大小的地址
+            copySz = count;
+            memcpy(data, rb->rbHead, copySz);
+            rb->rbHead += copySz;  //头指针更新，指到下一个可读取数据那里
+            return copySz;
+        }
+        else
+        {	
+			//情况2.2、如果要读取的数据小于从环形缓冲区的首地址开始到环形缓冲区大小的地址
+            copySz = rbCapacity(rb) - (rb->rbHead - rb->rbBuff); 
+            memcpy(data, rb->rbHead, copySz);
+            rb->rbHead = rb->rbBuff;
+            copySz += rbRead(rb, (char*)data+copySz, count-copySz);  //递归
+            return copySz;
+        }
+    }
+}
+
+//环形缓冲区写数据，将data中count个数据，存到rb缓存区中
+int32_t ICACHE_FLASH_ATTR rbWrite(rb_t *rb, const void *data, size_t count)
+{
+    int32_t tailAvailSz = 0;
+	//如果数据地址非法或者是可写数据长度不够，那么就会返回错误代码。
+    if((NULL == rb)||(NULL == data))
+    {
+        return -1;
+    }
+
+    if (count >= rbCanWrite(rb))
+    {
+        return -2;
+    }
+	//情况1、如果rb->rbHead <= rb->rbTail，可写书的地址不是递增的，那么，也是分成两段，
+    if (rb->rbHead <= rb->rbTail)
+    {
+        tailAvailSz = rbCapacity(rb) - (rb->rbTail - rb->rbBuff);
+		/*写入数据的长度小于从尾指针到环形缓冲区最后一个地址的长度，那么，
+		写入的这段数据其实其地址也是递增的，同样是可以直接写的，然后更新一下尾指针。*/
+        if (count <= tailAvailSz)
+        {
+            memcpy(rb->rbTail, data, count);
+            rb->rbTail += count;
+            if (rb->rbTail == rb->rbBuff+rbCapacity(rb))
+            {
+                rb->rbTail = rb->rbBuff;
+            }
+            return count;
+        }
+		/*也需要分段写入，先写入从尾指针到环形缓冲区最后一个地址的长度，
+		然后从环形缓冲区的首地址开始再写入剩下的数据长度count-tailAvailSz*/
+        else
+        {
+            memcpy(rb->rbTail, data, tailAvailSz);
+            rb->rbTail = rb->rbBuff;
+
+            return tailAvailSz + rbWrite(rb, (char*)data+tailAvailSz, count-tailAvailSz);
+        }
+    }
+	//情况2、如果rb->rbHead > rb->rbTail，说明可写数据的地址是递增的，那么是可以直接写的
+    else
+    {
+        memcpy(rb->rbTail, data, count);
+        rb->rbTail += count;
+        return count;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
